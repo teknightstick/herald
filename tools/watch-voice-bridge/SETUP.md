@@ -54,12 +54,24 @@ of ticket #2. Do not use it to bypass that gate.
 
 The default snapshot is
 `~/.local/state/herald-voice-bridge/watch-config-backup.json` (directory mode 700,
-file mode 600). It records the explicit ADB target and Android user privately,
+file mode 600). New schema2 snapshots record the explicit ADB target, validated
+stable `getprop ro.serialno` device identity, and Android user privately. Restore
+matches the stable identity and user, so a wireless-debug port change is safe;
+`--serial` still explicitly targets every ADB command. Empty, placeholder, or
+malformed stable identity fails closed. The snapshot also records
 original assistant role holders, secure `assistant`, `voice_interaction_service`,
 and `voice_recognition_service`, plus global `setting_home_key_long_press`.
 Recognition-service state is saved because the role observer can update it.
 Absent values are JSON `null`; empty strings and the literal string `"null"`
 remain distinct. Reads use `settings list`, not ambiguous `settings get` output.
+
+Existing schema1 helper snapshots remain readable **only with the original ADB
+serial and Android user**, since no stable identity was captured. They are never
+silently upgraded, overwritten, or re-snapshotted. A changed wireless endpoint
+cannot establish that an old schema1 baseline belongs to this watch; stop for
+operator review using independently verified device identity. This change does
+not migrate the parent's existing private snapshot or infer its device identity.
+Do not replace the only baseline to work around a mismatch.
 
 The parent investigation's **`watch-baseline.json` has a different schema and
 must not be overwritten or passed to this tool**. The helper refuses that name.
@@ -90,8 +102,10 @@ then checks installation and package-scoped ASSIST resolution. It:
    `googlevoiceassistant/googlevoiceassistant`, then reads it back.
 4. Requires `dumpsys window policy` to report
    `mLongPressOnPowerBehavior=LONG_PRESS_POWER_ASSISTANT`, together with the role,
-   secure assistant, and selector readbacks. Updates get a bounded convergence
-   wait. Unsupported output/readback fails closed rather than claiming success.
+   secure assistant, **empty-string `voice_interaction_service`** (activity-only
+   assistant, not an unrelated bound interactor), and selector readbacks. Updates
+   get a bounded convergence wait. Unsupported output/readback fails closed
+   rather than claiming success.
 
 That Samsung value is a firmware mode selector, **not a component name**.
 Arbitrary bridge component strings select the wrong policy branch. The legacy

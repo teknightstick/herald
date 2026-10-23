@@ -9,9 +9,22 @@ import android.widget.TextView;
 
 /** One-shot, permissionless handoff. Herald owns consent, recognition and chat identity. */
 public final class AssistActivity extends Activity {
+    private static final String SAVED_ERROR = "visible_error";
+    private String visibleError;
+
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        handoff();
+        if (state == null) {
+            handoff();
+        } else {
+            String saved = state.getString(SAVED_ERROR);
+            showError(saved != null ? saved : "Voice handoff was interrupted. Invoke the assistant again to retry.");
+        }
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        state.putString(SAVED_ERROR, visibleError);
     }
 
     @Override protected void onNewIntent(Intent incoming) {
@@ -38,6 +51,7 @@ public final class AssistActivity extends Activity {
     }
 
     private void showError(String message) {
+        visibleError = message;
         TextView error = new TextView(this);
         error.setText(message);
         error.setGravity(Gravity.CENTER);

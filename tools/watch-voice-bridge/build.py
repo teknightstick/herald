@@ -8,6 +8,7 @@ from pathlib import Path
 import secrets
 import shutil
 import subprocess
+import struct
 import zipfile
 
 HERE = Path(__file__).resolve().parent
@@ -22,9 +23,40 @@ def deterministic_zip(destination, entries):
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, content in sorted(entries):
             info = zipfile.ZipInfo(name, (2000, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = zipfile.ZIP_STORED if name == "resources.arsc" else zipfile.ZIP_DEFLATED
+            if name == "resources.arsc":
+                # Valid deterministic ZIP extra field; align actual local-header data,
+                # not the central directory. The four-byte field header preserves mod4.
+                assert archive.fp is not None
+                offset = archive.fp.tell() + 30 + len(name.encode("utf-8"))
+                padding = (-offset) % 4
+                if padding:
+                    info.extra = struct.pack("<HH", 0xCAFE, padding) + bytes(padding)
             info.external_attr = 0o644 << 16
             archive.writestr(info, content)
+
+
+def verify_resource_layout(apk):
+    with zipfile.ZipFile(apk) as archive, open(apk, "rb") as stream:
+        resource = archive.getinfo("resources.arsc")
+        stream.seek(resource.header_offset)
+        header = stream.read(30)
+        if header[:4] != b"PK\x03\x04":
+            raise RuntimeError("Invalid resource local header")
+        compression = struct.unpack_from("<H", header, 8)[0]
+        name_size, extra_size = struct.unpack_from("<HH", header, 26)
+        offset = resource.header_offset + 30 + name_size + extra_size
+        if resource.compress_type != zipfile.ZIP_STORED or compression != zipfile.ZIP_STORED or offset % 4:
+            raise RuntimeError("resources.arsc must be STORED and four-byte aligned")
+        return {"compression": "STORED", "data_offset": offset, "alignment": 4}
+
+
+def validate_output_directory(out):
+    out = out.resolve()
+    protected = [HERE / name for name in ("src", "tests", "build-support")]
+    if (out == HERE or out in HERE.parents
+            or any(out == path or path in out.parents for path in protected)):
+        raise ValueError("Unsafe output directory")
 
 
 def main():
@@ -62,8 +94,10 @@ def main():
         if "onStartActivity(android.content.Intent)" not in api or "ActivityMonitor();" not in api:
             parser.error("Test compile jar lacks API26+ ActivityMonitor() / onStartActivity(Intent)")
     out = args.out.resolve()
-    if out == HERE or HERE in out.parents and out.name in {"src", "tests", "build-support"}:
-        parser.error("Unsafe output directory")
+    try:
+        validate_output_directory(out)
+    except ValueError as error:
+        parser.error(str(error))
     out.mkdir(parents=True, exist_ok=True)
     signing = args.signing_dir.expanduser().resolve()
     # User-local keys must never live inside ANY checkout/worktree.
@@ -116,8 +150,10 @@ def main():
             entries = [(n, zipped.read(n)) for n in zipped.namelist()]
         entries += [(p.name, p.read_bytes()) for p in sorted(dex.glob("*.dex"))]
         deterministic_zip(unsigned, entries)
+        verify_resource_layout(unsigned)
         apk = out / f"{name}.apk"
         run(java, "-cp", f"{host}{os.pathsep}{apksig}", "SignApk", unsigned, apk, key, password)
+        layout = verify_resource_layout(apk)  # Signing may rewrite ZIP local headers.
         badging = run(aapt, "dump", "badging", apk, capture=True)
         xml = run(aapt, "dump", "xmltree", "--file", "AndroidManifest.xml", apk, capture=True)
         if "uses-permission" in xml or "android:debuggable" in xml:
@@ -134,7 +170,7 @@ def main():
                     raise RuntimeError(f"Missing public contract in compiled manifest: {value}")
         digest = hashlib.sha256(apk.read_bytes()).hexdigest()
         print(f"SHA256 {digest}  {apk}")
-        return {"apk": str(apk), "sha256": digest}
+        return {"apk": str(apk), "sha256": digest, "resources_arsc": layout}
 
     artifacts = [build("herald-voice-bridge", HERE / "src", HERE / "AndroidManifest.xml", android)]
     if args.with_tests:
