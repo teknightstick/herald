@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="dev.herald.voicebridge" android:versionCode="1" android:versionName="0.1.0">
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="36" />
+    <uses-feature android:name="android.hardware.type.watch" android:required="true" />
+    <application android:label="Herald Voice Bridge" android:allowBackup="false"
+        android:theme="@android:style/Theme.DeviceDefault">
+        <activity android:name=".AssistActivity" android:exported="true"
+            android:launchMode="singleTop" android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <action android:name="android.intent.action.VOICE_ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

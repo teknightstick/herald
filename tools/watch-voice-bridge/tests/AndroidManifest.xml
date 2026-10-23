@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="dev.herald.voicebridge.tests" android:versionCode="1" android:versionName="0.1.0">
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="36" />
+    <application android:label="Herald Bridge Boundary Tests" android:allowBackup="false" />
+    <instrumentation android:name="dev.herald.voicebridge.tests.HandoffInstrumentation"
+        android:targetPackage="dev.herald.voicebridge" android:functionalTest="true" />
+</manifest>
