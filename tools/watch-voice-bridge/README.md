@@ -16,8 +16,10 @@ not a replacement or rebuild of official Herald. No project Gradle changes.
   a claim that warm Herald voice has been demonstrated.
 - Finishes immediately after an accepted start. Missing/incompatible Herald
   (`ActivityNotFoundException`) or a denied start (`SecurityException`) leaves
-  readable error text. No silent fallback/retry, services, receivers or test
-  endpoints. The user can dismiss the error normally.
+  readable error text. Recreation restores that error without retrying voice;
+  only a genuine new invocation (`onNewIntent`) retries on a retained activity.
+  No silent fallback/retry, services, receivers or test endpoints. The user can
+  dismiss the error normally.
 - **No permissions**, including microphone, network, accessibility or notification
   listener. Herald owns microphone consent, recognition, live-voice preference,
   gateway access and existing chat identity.
@@ -62,7 +64,12 @@ The test APK is signed with the same local identity for instrumentation access.
 Outputs under ignored `out/` include release APK, optional test APK, compiled
 manifest/badging text and `build-report.json` (tool hashes and APK SHA256).
 Signing enables v2/v3 and verifies v3 for API30–36 using apksig. All zip entries
-use fixed timestamps and deterministic order. Repeat builds with the same
+use fixed timestamps and deterministic order. `resources.arsc` is **STORED** and
+its local-header data is four-byte aligned with a deterministic ZIP extra field
+before signing (stdlib only, no SDK zipalign). The builder asserts storage and
+actual data alignment again on the **signed** APK and records offsets in the
+report. Android R+ rejects compressed/misaligned resource tables at install.
+Repeat builds with the same
 sources, tools and local signing identity are checked for byte reproducibility;
 fresh identity generation intentionally changes the APK.
 
@@ -88,12 +95,18 @@ EULA. Artifact is not packaged in either APK and no Robolectric runtime is used.
 
 Agreed seam: public assist invocation → actual outgoing explicit Herald intent.
 `tests/src/.../HandoffInstrumentation.java` uses the **real framework** monitor
-and intercepts every non-bridge activity start before it can run. It checks:
+and intercepts every non-bridge activity start before it can run. Explicit
+components take precedence: only the exact bridge `AssistActivity` is allowed;
+package-scoped implicit bridge starts are allowed only without a component.
+A conflicting bridge package plus explicit Herald component is always blocked.
+The suite calls the actual monitor with that sabotage intent without dispatching
+it, before any test launch. It checks:
 
 1. Both public action filters resolve to this package.
 2. Cold and repeated bridge launches produce exactly one official component
    handoff, only boolean `listen=true`, sanitized context and task-reuse flags.
-3. Retaining the bridge via an injected missing-target failure then delivering
+3. Retaining the bridge via an injected missing-target failure, recreating it
+   with no new outgoing intent and preserved visible error, then delivering
    `callActivityOnNewIntent` exercises its warm lifecycle forwarding and finish.
 4. Injected missing-target/security exceptions leave the corresponding visible
    error instead of finishing or launching a fallback.
@@ -137,9 +150,56 @@ cancellation, deployment verification, test APK removal and all device changes.
 - First manifest attempt exposed API16's non-public `supportsRtl`; removed this
   optional attribute instead of bypassing resource visibility.
 - **No device test, install, assistant setting change or microphone invocation
-  was performed by the implementation task.** The executable boundary suite
-  remains unrun, including behavioral red/green and a mutation/sabotage check.
+  was performed by the implementation task.** The executable **device** boundary
+  suite remains unrun; the host-only sabotage/lifecycle regressions below passed.
 - Parent must separately verify installed official Herald contract, real
   cold/warm voice flow, actual absence/failure behavior where safe, assistant
   qualification, Samsung routing and physical hold-to-talk. Watch unlock may
   require the user; do not claim unattended end-to-end voice acceptance.
+
+### Review-fix host evidence
+
+Run without a device (the Java checks use the prepared JDK):
+
+```sh
+python3 -m unittest discover -s tools/watch-voice-bridge/tests -p 'test_host.py' -v
+python3 tools/watch-voice-bridge/build.py --with-tests
+```
+
+- Packaging regression first failed with `8 != 0` (DEFLATED instead of STORED),
+  matching the parent's real install failure (-124: targeting R+ requires a
+  stored/aligned resource table). The
+  parent's old release observation was compression 8, data offset 2193, unaligned.
+  The regression now checks deterministic bytes and alignment across 16 prefix
+  lengths, and the verifier rejects both compressed and misaligned fixtures.
+- Scripted public `adb -s ... shell ...` transport tests initially exposed
+  reconnect rejection, acceptance of a wrong stable device, invalid identities,
+  and a nonempty unrelated voice interactor. All now pass. They cover rollback
+  after each configure write and each restore write, rollback failure reporting,
+  unrelated-holder refusal, stale baselines, exact absent/empty/literal `null`
+  and quoted value preservation, and schema1 backup preservation. No real `adb`
+  process is started by these tests.
+- Real Java bridge source compiled against minimal host lifecycle doubles first
+  failed `Recreation MUST NOT re-trigger Herald/microphone`; it now preserves the
+  error with no outgoing start and retries once on a new intent. The same pure
+  Java allowlist used by the device monitor first failed the conflicting
+  package/component sabotage case, then passed after explicit-component
+  precedence and exact-component allowlisting. These doubles do not simulate
+  Android process death or establish device lifecycle correctness.
+- **17 host tests passed.** Release and instrumentation APKs were really built
+  twice with the prepared independently licensed toolchain. apksig verified v3
+  for API30–36 on both builds; the signed resource tables were STORED, with data
+  offsets 2436 (release) and 6276 (tests), both divisible by four. Hashes matched
+  byte-for-byte on the repeat build:
+
+| APK | SHA256 |
+| --- | --- |
+| `herald-voice-bridge.apk` | `ec8136e6f352d3e8ba6c656433efbfe846d6a79db37d7959a57214cad8ca005e` |
+| `herald-voice-bridge-tests.apk` | `271773608bb2da75508b39398f17bc9bdcdace8afa4f59830700e81406c75e02` |
+
+The build also rejects output ancestors and nested source/test/build-support
+paths; the old leaf-name-only guard admitted `src/nested`. The existing signer
+emits a deprecation note, not a failed verification. No SDK tools/licenses were
+introduced and no Gradle files changed. Device installation and the expanded
+framework boundary suite remain the parent/operator's next prerequisite before
+any real handoff, routing change, or physical/microphone acceptance.

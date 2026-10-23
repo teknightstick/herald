@@ -28,6 +28,10 @@ class ConfigError(RuntimeError):
 class Watch:
     def __init__(self, serial):
         self.serial = serial
+        self.device_id = self.shell("getprop", "ro.serialno").strip()
+        if (not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", self.device_id)
+                or self.device_id.lower() in {"unknown", "null", "none"}):
+            raise ConfigError("Cannot determine a nonempty stable device identity (ro.serialno)")
         self.user = self.shell("am", "get-current-user").strip()
         if not self.user.isdecimal():
             raise ConfigError("Cannot determine current Android user")
@@ -96,6 +100,7 @@ class Watch:
         return (state["holders"] == [PACKAGE]
                 and isinstance(assistant, str)
                 and canonical_component(assistant) == component
+                and state["secure"]["voice_interaction_service"] == ""
                 and state["long_press"] == ASSISTANT_MODE
                 and bool(re.search(r"mLongPressOnPowerBehavior\s*=\s*LONG_PRESS_POWER_ASSISTANT\b", policy)))
 
@@ -138,7 +143,8 @@ def save_backup(path, watch):
     state = watch.state()
     if PACKAGE in state["holders"] or (state["secure"]["assistant"] or "").startswith(PACKAGE + "/"):
         raise ConfigError("Bridge already selected; cannot capture a pre-bridge baseline")
-    data = {"schema": 1, "serial": watch.serial, "user": watch.user, "state": state}
+    data = {"schema": 2, "serial": watch.serial, "device_id": watch.device_id,
+            "user": watch.user, "state": state}
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as stream:
         os.fchmod(stream.fileno(), 0o600)
@@ -155,9 +161,18 @@ def load_backup(path, watch):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
             raise ConfigError("Backup must be an owned regular file with mode 600")
         data = json.load(stream)
-    if (not isinstance(data, dict) or data.get("schema") != 1
-            or data.get("serial") != watch.serial or data.get("user") != watch.user):
+    if not isinstance(data, dict) or data.get("user") != watch.user:
         raise ConfigError("Backup schema/device/user mismatch")
+    # Legacy snapshots cannot establish stable identity across a changed endpoint.
+    # Never silently upgrade or overwrite the operator's only baseline.
+    if data.get("schema") == 1:
+        identity_matches = data.get("serial") == watch.serial
+    elif data.get("schema") == 2:
+        identity_matches = data.get("device_id") == watch.device_id
+    else:
+        identity_matches = False
+    if not identity_matches:
+        raise ConfigError("Backup schema/device/user mismatch (schema1 requires original ADB serial)")
     state = data.get("state", {})
     if (not isinstance(state, dict) or set(state) != {"holders", "secure", "long_press"}
             or not isinstance(state["holders"], list)

@@ -1,6 +1,7 @@
 package dev.herald.voicebridge.tests;
 
 import android.app.Activity;
+import android.app.Application;
 import android.app.Instrumentation;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
@@ -12,6 +13,9 @@ import android.view.ViewGroup;
 import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Separate test APK: intercept every outgoing start before any target can run. */
 public final class HandoffInstrumentation extends Instrumentation {
@@ -28,9 +32,10 @@ public final class HandoffInstrumentation extends Instrumentation {
         Bundle report = new Bundle();
         ActivityMonitor guard = new ActivityMonitor() {
             @Override public ActivityResult onStartActivity(Intent intent) {
-                if ("dev.herald.voicebridge".equals(intent.getPackage())
-                        || (intent.getComponent() != null && "dev.herald.voicebridge".equals(
-                                intent.getComponent().getPackageName()))) return null;
+                ComponentName component = intent.getComponent();
+                if (LaunchPolicy.allows(intent.getPackage(),
+                        component == null ? null : component.getPackageName(),
+                        component == null ? null : component.getClassName())) return null;
                 outgoing.add(new Intent(intent));
                 if ("missing".equals(failure)) throw new ActivityNotFoundException("Test denial");
                 if ("security".equals(failure)) throw new SecurityException("Test denial");
@@ -52,6 +57,13 @@ public final class HandoffInstrumentation extends Instrumentation {
         watchdog.setDaemon(true);
         watchdog.start();
         try {
+            // Exercise the actual monitor without dispatching a dangerous intent.
+            Intent conflicting = new Intent().setPackage("dev.herald.voicebridge")
+                    .setClassName("dev.herald.android", "dev.hermeskotlin.wear.MainActivity");
+            check(guard.onStartActivity(conflicting) != null,
+                    "Explicit Herald component must block even with bridge package");
+            check(guard.onStartActivity(new Intent().setClassName("dev.herald.voicebridge",
+                    "dev.herald.voicebridge.Unknown")) != null, "Unknown bridge component must block");
             assertResolves("android.intent.action.ASSIST");
             assertResolves("android.intent.action.VOICE_ASSIST");
             launchAndCheck("android.intent.action.ASSIST");
@@ -62,6 +74,11 @@ public final class HandoffInstrumentation extends Instrumentation {
             check(!warm.isFinishing(), "Missing target must leave a visible error");
             check(text(warm.getWindow().getDecorView()).contains("not installed"), "Missing-target error");
             failure = null;
+            int beforeRecreate = outgoing.size();
+            String savedError = text(warm.getWindow().getDecorView());
+            warm = recreate(warm);
+            check(outgoing.size() == beforeRecreate, "Recreation must not retry outgoing voice handoff");
+            check(savedError.equals(text(warm.getWindow().getDecorView())), "Recreation must preserve visible error");
             final Activity retained = warm;
             final int before = outgoing.size();
             runOnMainSync(new Runnable() {
@@ -89,6 +106,35 @@ public final class HandoffInstrumentation extends Instrumentation {
             finish(Activity.RESULT_CANCELED, report);
         } finally {
             removeMonitor(guard);
+        }
+    }
+
+    private Activity recreate(final Activity previous) throws InterruptedException {
+        final CountDownLatch resumed = new CountDownLatch(1);
+        final AtomicReference<Activity> replacement = new AtomicReference<Activity>();
+        final Application application = previous.getApplication();
+        Application.ActivityLifecycleCallbacks callbacks = new Application.ActivityLifecycleCallbacks() {
+            @Override public void onActivityCreated(Activity a, Bundle state) {}
+            @Override public void onActivityStarted(Activity a) {}
+            @Override public void onActivityResumed(Activity a) {
+                if (a != previous && previous.getClass().equals(a.getClass())) {
+                    replacement.set(a);
+                    resumed.countDown();
+                }
+            }
+            @Override public void onActivityPaused(Activity a) {}
+            @Override public void onActivityStopped(Activity a) {}
+            @Override public void onActivitySaveInstanceState(Activity a, Bundle state) {}
+            @Override public void onActivityDestroyed(Activity a) {}
+        };
+        application.registerActivityLifecycleCallbacks(callbacks);
+        try {
+            runOnMainSync(new Runnable() { @Override public void run() { previous.recreate(); } });
+            check(resumed.await(10, TimeUnit.SECONDS), "Recreated error activity must resume within 10s");
+            waitForIdleSync();
+            return replacement.get();
+        } finally {
+            application.unregisterActivityLifecycleCallbacks(callbacks);
         }
     }
 
